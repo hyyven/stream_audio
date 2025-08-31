@@ -111,6 +111,7 @@ static class Client
 		waveOut.Init(waveProvider);
 		try
 		{
+			Console.WriteLine("Starting audio playback. Press Ctrl+C to stop.");
 			await AudioReceiveLoop(udpClient, (BufferedWaveProvider)waveProvider, waveOut);
 		}
 		catch (Exception ex)
@@ -134,9 +135,11 @@ static class Client
 		isPlaying = false;
 		targetBufferDuration = TimeSpan.FromMilliseconds(5);
 		oldnbr = 0;
+		// Console.WriteLine("Waiting for audio packets...");
 		while (true)
 		{
 			receivedResults = await udpClient.ReceiveAsync();
+			// Console.Write("\rReceived packet size: " + receivedResults.Buffer.Length + " bytes   ");
 			if (receivedResults.Buffer.Length > 12)
 			{
 				oldnbr = ProcessAudioPacket(receivedResults.Buffer, waveProvider, oldnbr);

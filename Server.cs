@@ -53,25 +53,101 @@ static class Server
 		return receivedResults.RemoteEndPoint;
 	}
 
+	// //stream audio without conversion : faster (ig), but can crash if u don't have the same amount of channels
+	// private static async Task StreamAudio(UdpClient udpClient, IPEndPoint remoteEndPoint)
+	// {
+	// 	WasapiLoopbackCapture	capture;
+	// 	int						nbr;
+
+	// 	nbr = 0;
+	// 	capture = new WasapiLoopbackCapture();
+	// 	await SendAudioFormat(udpClient, remoteEndPoint, capture.WaveFormat);
+	// 	capture.DataAvailable += (s, a) =>
+	// 	{
+	// 		try
+	// 		{
+	// 			if (a.BytesRecorded == 0)
+	// 				return;
+	// 			byte[] packet;
+	// 			packet = CreateAudioPacket(a.Buffer, a.BytesRecorded, ++nbr);
+	// 			udpClient.Send(packet, packet.Length, remoteEndPoint);
+	// 			Console.Write($"\rSent packet {nbr} ({packet.Length} bytes) to {remoteEndPoint}...");
+	// 		}
+	// 		catch (Exception ex)
+	// 		{
+	// 			Console.WriteLine($"\nError in DataAvailable: {ex.Message}");
+	// 		}
+	// 	};
+	// 	capture.RecordingStopped += (s, a) => { capture.Dispose(); };
+	// 	capture.StartRecording();
+	// 	Console.WriteLine("Recording and streaming started. Press Enter to stop.");
+	// 	Console.ReadLine();
+	// 	capture.StopRecording();
+	// }
+
 	private static async Task StreamAudio(UdpClient udpClient, IPEndPoint remoteEndPoint)
 	{
-		WasapiLoopbackCapture	capture;
-		int						nbr;
-
-		nbr = 0;
-		capture = new WasapiLoopbackCapture();
-		await SendAudioFormat(udpClient, remoteEndPoint, capture.WaveFormat);
-		capture.DataAvailable += (s, a) =>
+		using (var capture = new WasapiLoopbackCapture())
 		{
-			byte[] packet;
-			packet = CreateAudioPacket(a.Buffer, a.BytesRecorded, ++nbr);
-			udpClient.Send(packet, packet.Length, remoteEndPoint);
-		};
-		capture.RecordingStopped += (s, a) => { capture.Dispose(); };
-		capture.StartRecording();
-		Console.WriteLine("Recording and streaming started. Press Enter to stop.");
-		Console.ReadLine();
-		capture.StopRecording();
+			WaveFormat targetFormat;
+			int nbr;
+
+			targetFormat = new WaveFormat(capture.WaveFormat.SampleRate, capture.WaveFormat.BitsPerSample, 2);
+			nbr = 0;
+			await SendAudioFormat(udpClient, remoteEndPoint, targetFormat);
+			capture.DataAvailable += (s, a) =>
+			{
+				(byte[] buffer, int bytes) conversionResult;
+				byte[] packet;
+
+				try
+				{
+					if (a.BytesRecorded == 0)
+					{
+						// Console.WriteLine("\nNo audio data recorded.");
+						return;
+					}
+					conversionResult = ConvertToStereo(a.Buffer, a.BytesRecorded, capture.WaveFormat, targetFormat);
+					if (conversionResult.bytes > 0)
+					{
+						packet = CreateAudioPacket(conversionResult.buffer, conversionResult.bytes, ++nbr);
+						udpClient.Send(packet, packet.Length, remoteEndPoint);
+						Console.Write($"\rSent packet {nbr} ({packet.Length} bytes) to {remoteEndPoint}...");
+					}
+					else
+					{
+						Console.WriteLine($"\nFailed to process audio packet (bytesToSend=0).");
+					}
+				}
+				catch (Exception ex)
+				{
+					Console.WriteLine($"\nError in DataAvailable: {ex.Message}");
+				}
+			};
+			capture.RecordingStopped += (s, a) => { capture.Dispose(); };
+			capture.StartRecording();
+			Console.WriteLine("Recording and streaming started. Press Enter to stop.");
+			Console.ReadLine();
+			capture.StopRecording();
+		}
+	}
+
+	private static (byte[] buffer, int bytes) ConvertToStereo(byte[] inputBuffer, int bytesRecorded, WaveFormat sourceFormat, WaveFormat targetFormat)
+	{
+		byte[] convertedBuffer;
+		int convertedBytes;
+
+		if (sourceFormat.Channels == 2)
+			return (inputBuffer, bytesRecorded);
+		using (var sourceStream = new RawSourceWaveStream(inputBuffer, 0, bytesRecorded, sourceFormat))
+		{
+			using (var resampler = new MediaFoundationResampler(sourceStream, targetFormat))
+			{
+				convertedBuffer = new byte[bytesRecorded * 4];
+				convertedBytes = resampler.Read(convertedBuffer, 0, convertedBuffer.Length);
+				return (convertedBuffer, convertedBytes);
+			}
+		}
 	}
 
 	private static async Task SendAudioFormat(UdpClient udpClient, IPEndPoint remoteEndPoint, WaveFormat waveFormat)
